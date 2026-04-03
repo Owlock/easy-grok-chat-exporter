@@ -1,4 +1,7 @@
 # Easy Grok Chat Exporter
+<p align="center">
+  <img src="GROK%20EASY%20CHAT%20EXPORTER.png" alt="Easy Grok Chat Exporter Logo" width="200">
+</p>
 [![Python](https://img.shields.io/badge/Python-3.6+-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20|%20macOS%20|%20Linux-lightgrey.svg)](https://github.com/Owlock/easy-grok-chat-exporter)
