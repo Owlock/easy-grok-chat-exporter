@@ -5,14 +5,30 @@ import sys
 import argparse
 from datetime import datetime
 
+# Force UTF-8 output on Windows so Unicode prints correctly in the console
+if sys.platform == "win32":
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 def safe_filename(title):
     """
     Return a sanitized version of 'title' for filenames.
-    Removes non-ASCII characters (including emojis),
-    then replaces typical forbidden characters with '_'.
+    Keeps Unicode characters intact, but replaces filesystem-forbidden
+    characters and control characters with '_' or removes them.
     """
-    title = re.sub(r'[^\x00-\x7F]+', '', title)
-    return re.sub(r'[\\/*?:"<>|]', '_', title).strip()
+    if not title:
+        return ""
+    # Remove control characters (0x00-0x1f, 0x7f)
+    title = re.sub(r'[\x00-\x1f\x7f]', '', title)
+    # Replace filesystem-forbidden characters with '_'
+    title = re.sub(r'[\\\\/*?:"<>|]', '_', title)
+    # Collapse multiple whitespace characters and trim
+    title = re.sub(r'\s+', ' ', title).strip()
+    return title
 
 def extract_thinking_text(traces):
     """Extract and format thinking traces from Grok responses."""
@@ -71,7 +87,16 @@ def format_thinking_for_text(thinking_text):
     
     return '\n'.join(lines)
 
-def process_conversation(conv, include_thinking=False):
+def is_ai_sender(sender):
+    """
+    Return True if the sender is an AI/assistant (not the human user).
+    Grok exports may label user messages differently (USER, HUMAN, etc.),
+    so we whitelist known AI senders instead of blacklisting 'USER'.
+    """
+    s = str(sender).upper()
+    return any(k in s for k in ('GROK', 'ASSISTANT', 'AI_', 'BOT'))
+
+def process_conversation(conv, include_thinking=False, novel_mode=False):
     """Process a single Grok conversation and return formatted content."""
     if not isinstance(conv, dict) or 'conversation' not in conv or 'responses' not in conv:
         return None
@@ -82,10 +107,13 @@ def process_conversation(conv, include_thinking=False):
     create_time = conv_data.get('create_time', '')
     responses = conv['responses']
     
-    if not title or not responses:
+    if not responses:
         return None
     
     title_sanitized = safe_filename(title)
+    if not title_sanitized:
+        # Fallback so Unicode-only or empty titles still get exported
+        title_sanitized = safe_filename(f"untitled_{chat_id}")
     if not title_sanitized:
         return None
     
@@ -95,7 +123,8 @@ def process_conversation(conv, include_thinking=False):
         'title_sanitized': title_sanitized,
         'create_time': create_time,
         'responses': responses,
-        'include_thinking': include_thinking
+        'include_thinking': include_thinking,
+        'novel_mode': novel_mode
     }
 
 def convert_to_markdown(processed_conv, output_dir):
@@ -109,7 +138,10 @@ def convert_to_markdown(processed_conv, output_dir):
     include_thinking = processed_conv['include_thinking']
     responses = processed_conv['responses']
     
-    filename = os.path.join(output_dir, f"{title_sanitized}.md")
+    novel_mode = processed_conv.get('novel_mode', False)
+    
+    base_name = f"{title_sanitized}_answers" if novel_mode else title_sanitized
+    filename = os.path.join(output_dir, f"{base_name}.md")
     
     try:
         with open(filename, 'w', encoding='utf-8') as f:
@@ -117,7 +149,8 @@ def convert_to_markdown(processed_conv, output_dir):
             f.write(f"**Chat ID:** {chat_id}\n\n")
             if create_time:
                 f.write(f"**Created:** {create_time}\n\n")
-            f.write("---\n\n")
+            if not novel_mode:
+                f.write("---\n\n")
             
             for resp_wrapper in responses:
                 resp = resp_wrapper.get('response', {})
@@ -127,6 +160,9 @@ def convert_to_markdown(processed_conv, output_dir):
                 sender = resp.get('sender', 'unknown')
                 message = resp.get('message', '')
                 
+                if novel_mode and not is_ai_sender(sender):
+                    continue
+                
                 if include_thinking:
                     thinking_traces = resp.get('agent_thinking_traces', [])
                     thinking_text = extract_thinking_text(thinking_traces)
@@ -134,9 +170,13 @@ def convert_to_markdown(processed_conv, output_dir):
                         f.write(format_thinking_for_markdown(thinking_text))
                 
                 if message:
-                    f.write(f"**{sender}:**\n\n{message}\n\n")
+                    if novel_mode:
+                        f.write(f"{message.strip()}\n\n")
+                    else:
+                        f.write(f"**{sender}:**\n\n{message}\n\n")
                 
-                f.write("---\n\n")
+                if not novel_mode:
+                    f.write("---\n\n")
         
         return True
     except Exception as e:
@@ -154,7 +194,10 @@ def convert_to_text(processed_conv, output_dir):
     include_thinking = processed_conv['include_thinking']
     responses = processed_conv['responses']
     
-    filename = os.path.join(output_dir, f"{title_sanitized}.txt")
+    novel_mode = processed_conv.get('novel_mode', False)
+    
+    base_name = f"{title_sanitized}_answers" if novel_mode else title_sanitized
+    filename = os.path.join(output_dir, f"{base_name}.txt")
     
     try:
         with open(filename, 'w', encoding='utf-8') as f:
@@ -172,6 +215,9 @@ def convert_to_text(processed_conv, output_dir):
                 sender = resp.get('sender', 'unknown')
                 message = resp.get('message', '')
                 
+                if novel_mode and not is_ai_sender(sender):
+                    continue
+                
                 if include_thinking:
                     thinking_traces = resp.get('agent_thinking_traces', [])
                     thinking_text = extract_thinking_text(thinking_traces)
@@ -179,9 +225,13 @@ def convert_to_text(processed_conv, output_dir):
                         f.write(format_thinking_for_text(thinking_text))
                 
                 if message:
-                    f.write(f"{sender}:\n\n{message}\n\n")
+                    if novel_mode:
+                        f.write(f"{message.strip()}\n\n")
+                    else:
+                        f.write(f"{sender}:\n\n{message}\n\n")
                 
-                f.write("-" * 60 + "\n\n")
+                if not novel_mode:
+                    f.write("-" * 60 + "\n\n")
         
         return True
     except Exception as e:
@@ -288,7 +338,14 @@ def interactive_menu():
     thinking_choice = input("Enter choice [1-2] (default: 1): ").strip()
     include_thinking = thinking_choice == '2'
     
-    return json_file, formats, include_thinking
+    print()
+    print("Novel mode (exclude user prompts, read as continuous narrative)?")
+    print("1. No (standard chat transcript)")
+    print("2. Yes (answers only, story-like flow, saved as '<title>_answers')")
+    novel_choice = input("Enter choice [1-2] (default: 1): ").strip()
+    novel_mode = novel_choice == '2'
+    
+    return json_file, formats, include_thinking, novel_mode
 
 def main():
     parser = argparse.ArgumentParser(description='Grok Chat History Exporter')
@@ -299,15 +356,17 @@ def main():
     parser.add_argument('-jsonl', '--jsonlines', action='store_true', help='Export to JSON Lines')
     parser.add_argument('-all', '--all-formats', action='store_true', help='Export to all formats')
     parser.add_argument('-t', '--thinking', action='store_true', help='Include AI thinking traces')
+    parser.add_argument('-n', '--novel', action='store_true', help='Novel mode: exclude user prompts, continuous narrative, saved as <title>_answers')
     parser.add_argument('-i', '--interactive', action='store_true', help='Use interactive mode')
     
     args = parser.parse_args()
     
     if args.interactive or not args.json_file:
-        json_file, formats, include_thinking = interactive_menu()
+        json_file, formats, include_thinking, novel_mode = interactive_menu()
     else:
         json_file = args.json_file
         include_thinking = args.thinking
+        novel_mode = args.novel
         
         if args.all_formats:
             formats = ['md', 'txt', 'jsonl']
@@ -333,10 +392,11 @@ def main():
     print(f"Processing {total} conversations...")
     print(f"Output formats: {', '.join(formats)}")
     print(f"Include thinking: {'Yes' if include_thinking else 'No'}")
+    print(f"Novel mode: {'Yes' if novel_mode else 'No'}")
     print()
     
     for conv in conversations:
-        processed_conv = process_conversation(conv, include_thinking)
+        processed_conv = process_conversation(conv, include_thinking, novel_mode)
         if not processed_conv:
             skipped += 1
             continue
